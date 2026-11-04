@@ -148,6 +148,39 @@ The core needs to:
 4. Follow the absolute Gather `action` URL and send `Digits`. Callbacks carry opaque, server-side session IDs; **no cookies or PHP session IDs are needed**.
 5. Return control with empty `Digits` on a Gather timeout. Validate this behavior on your core version; after three empty callbacks the application ends the call.
 
+### Diagnosing a responder error before playback
+
+If the initial XML contains the fallback Gather but no `<Play>`, the HTTP request reached PHP and passed responder-key and mailbox validation. The failure happened while reading the mailbox or preparing the first message's audio. This is not evidence that the core cannot fetch the public media URL yet; no media URL was returned. XML `&amp;` in a callback attribute is correct escaping.
+
+The error response now identifies mailbox loading vs audio preparation, offers **5 to skip an unplayable message**, and includes a non-secret diagnostic reference in an XML comment. The private PHP error log contains the reference, operation and redacted reason. The same redacted record is saved as `last_error` inside the call's private state file.
+
+On Windows, immediately after reproducing a failed call, run in PowerShell:
+
+```powershell
+cd D:\www\vmplayback
+Get-ChildItem .\var\calls\*.json |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1 |
+    ForEach-Object {
+        (Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json).last_error |
+            ConvertTo-Json
+    }
+```
+
+If you set `STORAGE_PATH`, use its `calls` directory instead. The command prints **only `last_error`**. Do not share the entire state file: it contains signed audio URLs and callback capabilities. A missing `last_error` usually means that the selected call never reached this catch, succeeded, or predates the diagnostic update; check the PHP error log and the record's timestamp/reference.
+
+Typical diagnostic results:
+
+- `operation: list` + `HTTP 401` / `403`: check API token expiry and the token's mailbox/domain permissions (the responder key and API token are different credentials).
+- `operation: list` + a JSON/list error: the PBX returned an unexpected response shape; inspect that response privately without posting credentials.
+- `operation: audio` + download HTTP status / cURL error: check signed upstream media access, the exact allowed media host, and server connectivity.
+- cURL error `6` means DNS resolution failed, `7` connection failed, `28` timeout, and `60` certificate verification failed. Configure a trusted CA bundle for the **web server's PHP** rather than disabling TLS verification.
+- `operation: audio` + FFmpeg/cache/empty WAV error: verify the absolute `FFMPEG_BIN`, service-account execute/write permissions, and whether this specific voicemail actually contains audio. Press 5 to test the next message.
+
+Retrying playback does not repeat a save/forward operation that succeeded before the following audio failed. A failed folder read leaves the existing folder and messages paired correctly.
+
+Rotate any responder key posted in a trace and invalidate any exposed callback session by removing its corresponding private `var/calls/*.json` file (this ends that session). Do not share replacements or complete callback/media URLs. Production use should have HTTPS and trusted-core ingress restrictions.
+
 ### Keypad
 
 | Key | Action |

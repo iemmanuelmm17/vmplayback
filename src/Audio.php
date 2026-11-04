@@ -96,9 +96,9 @@ final class Audio {
                         return fwrite($fp, $chunk);
                     }]);
                 // file-access-url is already signed. Do not send the API bearer token to media hosts.
-                $ok = curl_exec($ch); $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+                $ok = curl_exec($ch); $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE); $errno = curl_errno($ch);
                 curl_close($ch); fclose($fp);
-                if (!$ok || $status !== 200 || $bytes < 44) throw new RuntimeException('Could not download voicemail audio.');
+                if (!$ok || $status !== 200 || $bytes < 44) throw new RuntimeException('Could not download voicemail audio (HTTP ' . $status . ', cURL error ' . $errno . ', bytes ' . $bytes . ').');
                 // Only accept WAV containers, not arbitrary FFmpeg playlists or network inputs.
                 $magic = file_get_contents($source, false, null, 0, 12);
                 if (substr($magic, 0, 4) !== 'RIFF' || substr($magic, 8, 4) !== 'WAVE') throw new RuntimeException('The voicemail server did not return WAV audio.');

@@ -18,8 +18,9 @@ final class NetSapiens {
                 $data .= $chunk; return strlen($chunk);
             }]);
         if ($body !== null) curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body, JSON_THROW_ON_ERROR));
-        $ok = curl_exec($ch); $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE); curl_close($ch);
-        if ($ok === false || $tooLarge) throw new RuntimeException('The voicemail server could not be reached.');
+        $ok = curl_exec($ch); $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE); $errno = curl_errno($ch); curl_close($ch);
+        if ($tooLarge) throw new RuntimeException('The voicemail API response exceeds the 8 MiB limit.');
+        if ($ok === false) throw new RuntimeException('The voicemail server could not be reached (cURL error ' . $errno . ').');
         if ($status < 200 || $status >= 300) throw new RuntimeException('Voicemail API request failed (HTTP ' . $status . ').');
         if (trim($data) === '') return [];
         try { return json_decode($data, true, 512, JSON_THROW_ON_ERROR); }
