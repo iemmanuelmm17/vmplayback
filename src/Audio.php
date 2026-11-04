@@ -14,12 +14,21 @@ final class Audio {
         if (!in_array($rate, [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0], true)) throw new InvalidArgumentException('Choose a playback speed from 0.50 to 2.00 in 0.25 steps.');
         return $rate;
     }
-    public static function cacheId(array $mailbox, string $file, float $rate, string $profile): string {
+    public static function codec(string $profile, ?string $phoneCodec = null): string {
         if (!in_array($profile, ['browser', 'phone'], true)) throw new InvalidArgumentException('Invalid audio profile.');
-        return hash('sha256', json_encode([self::CACHE_VERSION, $mailbox, filename($file), speed($rate), $profile], JSON_THROW_ON_ERROR));
+        if ($profile === 'browser') return 'pcm_s16le';
+        $codec = $phoneCodec ?? config()['phone_codec'];
+        if (!in_array($codec, ['pcm_s16le', 'pcm_mulaw', 'pcm_alaw'], true)) {
+            throw new InvalidArgumentException('PHONE_AUDIO_CODEC must be pcm_s16le, pcm_mulaw, or pcm_alaw.');
+        }
+        return $codec;
     }
-    public static function command(string $source, string $target, float $rate, string $profile): array {
-        if (!in_array($profile, ['browser', 'phone'], true)) throw new InvalidArgumentException('Invalid audio profile.');
+    public static function cacheId(array $mailbox, string $file, float $rate, string $profile, ?string $phoneCodec = null): string {
+        $codec = self::codec($profile, $phoneCodec);
+        return hash('sha256', json_encode([self::CACHE_VERSION, $mailbox, filename($file), speed($rate), $profile, $codec], JSON_THROW_ON_ERROR));
+    }
+    public static function command(string $source, string $target, float $rate, string $profile, ?string $phoneCodec = null): array {
+        $codec = self::codec($profile, $phoneCodec);
         $rate = speed($rate);
         $command = [config()['ffmpeg'], '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
             '-protocol_whitelist', 'file,pipe', '-f', 'wav', '-i', $source, '-t', '1800', '-vn'];
@@ -29,10 +38,12 @@ final class Audio {
         if ($rate !== 1.0) array_push($command, '-af', 'aresample=48000,atempo=' . number_format($rate, 2, '.', ''));
         if ($profile === 'phone') array_push($command, '-ar', '8000', '-ac', '1');
         else array_push($command, '-ar', '48000');
-        array_push($command, '-c:a', 'pcm_s16le', $target);
+        // Always a WAV container with an explicit codec, never raw G.711 bytes.
+        // A core that expects G.711 can select it without changing browser audio.
+        array_push($command, '-c:a', $codec, '-f', 'wav', $target);
         return $command;
     }
-    /** Inspect rendered PCM WAV chunks. Header-only and truncated files aren't playable. */
+    /** Inspect rendered PCM/G.711 WAV chunks. Header-only and truncated files aren't playable. */
     public static function wavInfo(string $path): ?array {
         $fp = @fopen($path, 'rb');
         if (!$fp) return null;
@@ -53,11 +64,16 @@ final class Audio {
                 } elseif (substr($chunk, 0, 4) === 'data') $bytes += $length;
                 if (fseek($fp, $start + $length + ($length % 2)) !== 0) return null;
             }
-            if (!$format || $format['codec'] !== 1 || $format['bits'] !== 16 || $format['channels'] < 1
-                || $format['sample_rate'] < 8000 || $format['block_align'] !== $format['channels'] * 2
+            if (!$format || $format['channels'] < 1 || $format['sample_rate'] < 8000) return null;
+            $codec = match ($format['codec']) { 1 => 'pcm_s16le', 6 => 'pcm_alaw', 7 => 'pcm_mulaw', default => null };
+            if ($codec === null) return null;
+            $sampleBytes = $codec === 'pcm_s16le' ? 2 : 1;
+            if ($format['bits'] !== $sampleBytes * 8 || $format['block_align'] !== $format['channels'] * $sampleBytes
                 || $format['byte_rate'] !== $format['sample_rate'] * $format['block_align']
                 || $bytes < $format['block_align'] || $bytes % $format['block_align'] !== 0) return null;
-            return ['sample_rate' => $format['sample_rate'], 'channels' => $format['channels'],
+            // Only the telephone G.711 modes we actually render are accepted.
+            if ($codec !== 'pcm_s16le' && ($format['sample_rate'] !== 8000 || $format['channels'] !== 1)) return null;
+            return ['sample_rate' => $format['sample_rate'], 'channels' => $format['channels'], 'codec' => $codec, 'bits' => $format['bits'],
                 'duration' => $bytes / $format['byte_rate'], 'data_bytes' => $bytes];
         } finally { fclose($fp); }
     }
@@ -76,7 +92,10 @@ final class Audio {
         if (!$lock || !flock($lock, LOCK_EX)) throw new RuntimeException('Audio cache is unavailable.');
         try {
             if (is_file($base . '.wav')) {
-                if (self::wavInfo($base . '.wav') !== null) { touch($base . '.wav'); return $id; }
+                $info = self::wavInfo($base . '.wav');
+                if ($info !== null && $info['codec'] === self::codec($profile)
+                    && $info['sample_rate'] === ($profile === 'phone' ? 8000 : 48000)
+                    && ($profile !== 'phone' || $info['channels'] === 1)) { touch($base . '.wav'); return $id; }
                 if (!unlink($base . '.wav')) throw new RuntimeException('Could not replace invalid cached audio.');
             }
             self::validateRemote($message['audio_url']);
@@ -113,8 +132,8 @@ final class Audio {
         } finally { flock($lock, LOCK_UN); fclose($lock); }
     }
     /** Local WAV conversion, also exercised by native FFmpeg integration tests. */
-    public static function convert(string $source, string $target, float $rate, string $profile): void {
-        $command = self::command($source, $target, $rate, $profile);
+    public static function convert(string $source, string $target, float $rate, string $profile, ?string $phoneCodec = null): void {
+        $command = self::command($source, $target, $rate, $profile, $phoneCodec);
         if (!function_exists('proc_open')) throw new RuntimeException('Audio conversion requires proc_open to be enabled in PHP.');
         $process = @proc_open($command, self::processDescriptors(), $pipes, null, null, ['bypass_shell' => true]);
         if (!is_resource($process)) throw new RuntimeException('Could not start FFmpeg. Set FFMPEG_BIN to the full executable path and grant the web-server account permission to run it.');

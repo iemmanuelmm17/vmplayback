@@ -5,6 +5,17 @@ final class Phone {
     public function __construct(private NetSapiens $api, private mixed $audio = null) {
         $this->audio ??= static fn($mailbox, $message, $rate) => Audio::signedUrl(Audio::prepare($mailbox, $message, $rate));
     }
+    /** Explicit words avoid TTS normalizing a digit string into a large integer. */
+    public static function spokenNumber(string $value): string {
+        $value = trim($value);
+        if ($value === '') return 'unknown caller';
+        // Leave anonymous/alphanumeric caller labels intact; do not extract digits
+        // from a person's name or a SIP address. Normalize only phone formatting.
+        if (!preg_match('/\A\+?[0-9().\s-]+\z/', $value) || !preg_match('/[0-9]/', $value)) return $value;
+        $digits = preg_replace('/[^0-9]/', '', $value);
+        $words = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
+        return implode(', ', array_map(static fn($digit) => $words[(int)$digit], str_split($digits)));
+    }
     public static function initial(array $mailbox, string $folder): array {
         return ['mailbox' => $mailbox, 'folder' => folder($folder), 'messages' => null, 'index' => 0, 'rate' => 1.0,
             'stage' => 'menu', 'operation' => 'control', 'destination' => '', 'timeouts' => 0, 'expires' => time() + 7200, 'step' => 0, 'responses' => []];
@@ -35,7 +46,7 @@ final class Phone {
             if ($digits === '*') { $s['stage'] = 'menu'; $notice = 'Forward cancelled.'; }
             elseif (preg_match('/\A[0-9]{1,12}\z/', $digits)) {
                 $s['destination'] = $digits; $s['stage'] = 'confirm';
-                return self::xml($this->gather($callback, '<Say>Forward to extension ' . escape(implode(' ', str_split($digits))) . '. Press 1 to confirm, or 2 to cancel.</Say>'));
+                return self::xml($this->gather($callback, '<Say>Forward to extension ' . escape(self::spokenNumber($digits)) . '. Press 1 to confirm, or 2 to cancel.</Say>'));
             } else return $this->destinationMenu($callback);
         } elseif ($s['stage'] === 'confirm') {
             if ($digits === '1') {
@@ -72,7 +83,7 @@ final class Phone {
         if ($play) {
             $s['operation'] = 'audio';
             $media = ($this->audio)($s['mailbox'], $m, $s['rate']);
-            $notice .= ' Message ' . ($s['index'] + 1) . ' of ' . count($s['messages']) . '. From ' . ($m['number'] ?: $m['name']) . '.';
+            $notice .= ' Message ' . ($s['index'] + 1) . ' of ' . count($s['messages']) . '. From ' . self::spokenNumber($m['number'] ?: $m['name']) . '.';
             $content .= '<Play>' . escape($media) . '</Play>';
         }
         $content .= '<Say>Press 1 to save, 2 to move to trash, 4 to forward, 5 for next, 7 for slower, 8 to replay, 9 for faster, star for folders, or 0 to end.</Say>';

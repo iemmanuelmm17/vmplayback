@@ -7,6 +7,7 @@ putenv('STORAGE_PATH=' . $directory . '/cache');
 require dirname(__DIR__) . '/src/bootstrap.php';
 $source = $directory . '/source with spaces.wav';
 $target = $directory . '/rendered.wav';
+$decoded = $directory . '/decoded.wav';
 $checks = 0;
 function verifyAudio(bool $condition, string $message): void {
     global $checks; $checks++;
@@ -18,14 +19,22 @@ try {
     for ($i = 0; $i < 16000; $i++) $data .= pack('v', ((int)round(sin(2 * M_PI * 440 * $i / 8000) * 10000)) & 0xffff);
     $chunks = 'fmt ' . pack('VvvVVvv', 16, 1, 1, 8000, 16000, 2, 16) . 'data' . pack('V', strlen($data)) . $data;
     file_put_contents($source, 'RIFF' . pack('V', strlen($chunks) + 4) . 'WAVE' . $chunks);
-    foreach (['browser', 'phone'] as $profile) {
+    foreach ([['browser', null], ['phone', 'pcm_s16le'], ['phone', 'pcm_mulaw'], ['phone', 'pcm_alaw']] as [$profile, $phoneCodec]) {
         foreach ([.5, .75, 1.0, 1.25, 1.5, 1.75, 2.0] as $rate) {
-            Audio::convert($source, $target, $rate, $profile);
+            Audio::convert($source, $target, $rate, $profile, $phoneCodec);
+            $label = $profile . '/' . ($phoneCodec ?? 'pcm_s16le') . ' ' . $rate;
             $info = Audio::wavInfo($target);
-            verifyAudio($info !== null, "$profile $rate: valid PCM WAV");
-            verifyAudio($info['sample_rate'] === ($profile === 'phone' ? 8000 : 48000), "$profile $rate: expected output sample rate");
-            verifyAudio(abs($info['duration'] - 2 / $rate) < .16, "$profile $rate: correct speed/duration");
-            $fp = fopen($target, 'rb'); fseek($fp, 12); $pcm = '';
+            verifyAudio($info !== null, "$label: valid PCM WAV");
+            verifyAudio($info['sample_rate'] === ($profile === 'phone' ? 8000 : 48000), "$label: expected output sample rate");
+            verifyAudio(abs($info['duration'] - 2 / $rate) < .16, "$label: correct speed/duration");
+            verifyAudio($info['codec'] === ($phoneCodec ?? 'pcm_s16le'), "$label: correct codec tag");
+            // Verify the actual decoded waveform, not the companded G.711 bytes.
+            $measureFile = $target;
+            if ($info['codec'] !== 'pcm_s16le') {
+                Audio::convert($target, $decoded, 1, 'browser');
+                $measureFile = $decoded;
+            }
+            $fp = fopen($measureFile, 'rb'); fseek($fp, 12); $pcm = '';
             while (!feof($fp)) {
                 $chunk = fread($fp, 8); if (strlen($chunk) !== 8) break;
                 $length = unpack('V', substr($chunk, 4, 4))[1];
@@ -41,8 +50,8 @@ try {
                 if ($previous < 0 && $sample >= 0) $crossings++;
                 $previous = $sample;
             }
-            verifyAudio(sqrt($energy / count($samples)) > 1000, "$profile $rate: output is not silent");
-            verifyAudio(abs($crossings / $info['duration'] - 440) < 15, "$profile $rate: pitch remains near 440 Hz");
+            verifyAudio(sqrt($energy / count($samples)) > 1000, "$label: output is not silent");
+            verifyAudio(abs($crossings / $info['duration'] - 440) < 15, "$label: pitch remains near 440 Hz");
         }
     }
     // Cache hits do not require the upstream URL, but broken cache entries must be discarded.
