@@ -135,4 +135,48 @@ $s = Phone::initial($mb, 'new');
 check(str_contains($unavailable->respond($s, '0', 'https://example.test'), '<Hangup/>'), 'hangup works even if the upstream API is unavailable');
 $xml = Phone::xml('<Say>' . escape("Caller <name> & \x01") . '</Say>');
 $doc = new DOMDocument(); check($doc->loadXML($xml), 'invalid XML control characters are replaced');
+// Responder diagnostics must identify the failing operation without disclosing
+// capabilities, caller metadata, raw upstream URLs or configured credentials.
+$s = Phone::initial($mb, 'new');
+try { $unavailable->respond($s, '', 'https://example.test/callback'); }
+catch (RuntimeException $e) { $failure = Phone::failure($s, $e, 'https://example.test/callback?a=1&b=2'); }
+check($s['last_error']['operation'] === 'list' && $s['last_error']['message'] === 'API down', 'mailbox-list failure retains useful private reason');
+check(str_contains($failure, 'mailbox could not be loaded') && !str_contains($failure, 'API down'), 'list failure prompt is specific without exposing exception details');
+check(str_contains($failure, 'Diagnostic reference: ') && str_contains($failure, '&amp;b='), 'error XML has a safe reference and escaped callback');
+check((new DOMDocument())->loadXML($failure), 'error response is valid XML');
+
+$renderFails = true;
+$audioFailure = new Phone($api, function () use (&$renderFails) {
+    if ($renderFails) throw new RuntimeException('FFmpeg test failure');
+    return 'https://example.test/audio.wav';
+});
+$s = Phone::initial($mb, 'new');
+try { $audioFailure->respond($s, '', 'https://example.test/callback'); }
+catch (RuntimeException $e) { $failure = Phone::failure($s, $e, 'https://example.test/callback'); }
+check($s['last_error']['operation'] === 'audio' && $s['index'] === 0, 'initial audio failure is not misclassified as API list failure');
+check(str_contains($failure, 'audio for this message') && str_contains($failure, '5 to skip'), 'unplayable-message recovery offers skip');
+$s['step']++;
+$renderFails = false;
+check(str_contains($audioFailure->respond($s, '5', 'https://example.test/callback'), '<Play>') && $s['index'] === 1, 'caller can skip a broken first message');
+
+$s = Phone::initial($mb, 'new'); $s['messages'] = $messages; $s['step'] = 1;
+$renderFails = true; $before = count($calls);
+try { $audioFailure->respond($s, '1', 'https://example.test/callback'); }
+catch (RuntimeException $e) { Phone::failure($s, $e, 'https://example.test/callback'); }
+check($s['index'] === 1 && $s['last_error']['operation'] === 'audio' && count($calls) === $before + 1, 'successful save stays committed if next audio preparation fails');
+$s['step']++; $renderFails = false;
+$audioFailure->respond($s, '8', 'https://example.test/callback');
+check(count($calls) === $before + 1 && $s['index'] === 1, 'retrying audio does not repeat the successful mutation');
+
+$folderFailure = new Phone(new NetSapiens(function () { throw new RuntimeException('Saved folder read failed'); }));
+$s = Phone::initial($mb, 'new'); $s['messages'] = $messages; $s['stage'] = 'folders'; $s['step'] = 1;
+try { $folderFailure->respond($s, '2', 'https://example.test/callback'); }
+catch (RuntimeException $e) { Phone::failure($s, $e, 'https://example.test/callback'); }
+check($s['folder'] === 'new' && $s['messages'] === $messages && $s['last_error']['operation'] === 'list', 'failed folder switch cannot relabel messages as belonging to another folder');
+
+$diagnostic = Phone::diagnostic(new RuntimeException('Failure ' . config()['key'] . ' https://media.example/play?auth=unknown-secret Bearer unknown-bearer key=unknown-key sid=unknown-session' . "\n" . 'next line'), 'audio');
+check(!str_contains($diagnostic['message'], config()['key']), 'configured application secret is redacted');
+foreach (['unknown-secret', 'unknown-bearer', 'unknown-key', 'unknown-session', 'https://', "\n"] as $secret) check(!str_contains($diagnostic['message'], $secret), 'unknown URL capabilities and log-control characters are redacted');
+check((bool)preg_match('/\A[a-f0-9]{12}\z/', $diagnostic['reference']), 'diagnostic reference has no session ID');
+check(Phone::diagnostic(new RuntimeException('test'), 'untrusted-operation')['operation'] === 'control', 'diagnostic operation is allowlisted');
 echo "PASS: $tests checks (trash " . (config()['trash_confirmed'] ? 'enabled' : 'disabled') . ").\n";

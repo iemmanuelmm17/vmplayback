@@ -7,20 +7,28 @@ final class Phone {
     }
     public static function initial(array $mailbox, string $folder): array {
         return ['mailbox' => $mailbox, 'folder' => folder($folder), 'messages' => null, 'index' => 0, 'rate' => 1.0,
-            'stage' => 'menu', 'destination' => '', 'timeouts' => 0, 'expires' => time() + 7200, 'step' => 0, 'responses' => []];
+            'stage' => 'menu', 'operation' => 'control', 'destination' => '', 'timeouts' => 0, 'expires' => time() + 7200, 'step' => 0, 'responses' => []];
     }
     public function respond(array &$s, string $digits, string $callback): string {
+        $s['operation'] = 'control';
         if ($s['stage'] === 'ended') return self::xml('<Hangup/>');
         if ($digits === '0' && $s['stage'] !== 'destination') { $s['stage'] = 'ended'; return self::xml('<Say>Goodbye.</Say><Hangup/>'); }
-        if ($s['messages'] === null) $s['messages'] = $this->api->messages($s['mailbox'], $s['folder']);
+        if ($s['messages'] === null) {
+            $s['operation'] = 'list';
+            $s['messages'] = $this->api->messages($s['mailbox'], $s['folder']);
+        }
         $notice = ''; $play = $s['step'] === 0;
         if ($digits === '' && $s['step'] > 0) {
             if (++$s['timeouts'] >= 3) { $s['stage'] = 'ended'; return self::xml('<Say>No input received. Goodbye.</Say><Hangup/>'); }
         } else { $s['timeouts'] = 0; }
         if ($s['stage'] === 'folders') {
             if (isset(['1' => 'new', '2' => 'save', '3' => 'trash'][$digits])) {
-                $s['folder'] = ['1' => 'new', '2' => 'save', '3' => 'trash'][$digits];
-                $s['messages'] = $this->api->messages($s['mailbox'], $s['folder']); $s['index'] = 0; $s['stage'] = 'menu'; $play = true;
+                $targetFolder = ['1' => 'new', '2' => 'save', '3' => 'trash'][$digits];
+                $s['operation'] = 'list';
+                $messages = $this->api->messages($s['mailbox'], $targetFolder);
+                // Commit the folder and its messages together, only after a successful read.
+                $s['folder'] = $targetFolder; $s['messages'] = $messages;
+                $s['index'] = 0; $s['stage'] = 'menu'; $play = true;
             } else return $this->folderMenu($callback);
         } elseif ($s['stage'] === 'destination') {
             // Asterisk cancels. Collection ends at max digits or the interdigit timeout.
@@ -32,7 +40,7 @@ final class Phone {
         } elseif ($s['stage'] === 'confirm') {
             if ($digits === '1') {
                 $m = $this->current($s);
-                if ($m) { $this->api->forward($s['mailbox'], $s['folder'], $m['filename'], $s['destination']); $s['index']++; $notice = 'Message forwarded.'; $play = true; }
+                if ($m) { $s['operation'] = 'forward'; $this->api->forward($s['mailbox'], $s['folder'], $m['filename'], $s['destination']); $s['index']++; $notice = 'Message forwarded.'; $play = true; }
                 $s['stage'] = 'menu';
             } elseif ($digits === '2' || $digits === '*') { $s['stage'] = 'menu'; $notice = 'Forward cancelled.'; }
             else return self::xml($this->gather($callback, '<Say>Press 1 to confirm forwarding, or 2 to cancel.</Say>'));
@@ -41,8 +49,8 @@ final class Phone {
             $m = $this->current($s);
             if ($m) {
                 switch ($digits) {
-                    case '1': $this->api->save($s['mailbox'], $s['folder'], $m['filename']); $s['index']++; $notice = 'Message saved.'; $play = true; break;
-                    case '2': $this->api->trash($s['mailbox'], $s['folder'], $m['filename']); $s['index']++; $notice = 'Message moved to trash.'; $play = true; break;
+                    case '1': $s['operation'] = 'save'; $this->api->save($s['mailbox'], $s['folder'], $m['filename']); $s['index']++; $notice = 'Message saved.'; $play = true; break;
+                    case '2': $s['operation'] = 'trash'; $this->api->trash($s['mailbox'], $s['folder'], $m['filename']); $s['index']++; $notice = 'Message moved to trash.'; $play = true; break;
                     case '4':
                         if ($s['folder'] === 'trash') { $notice = 'Save this message before forwarding.'; break; }
                         $s['stage'] = 'destination'; return $this->destinationMenu($callback);
@@ -62,12 +70,47 @@ final class Phone {
         }
         $content = '';
         if ($play) {
+            $s['operation'] = 'audio';
             $media = ($this->audio)($s['mailbox'], $m, $s['rate']);
             $notice .= ' Message ' . ($s['index'] + 1) . ' of ' . count($s['messages']) . '. From ' . ($m['number'] ?: $m['name']) . '.';
             $content .= '<Play>' . escape($media) . '</Play>';
         }
         $content .= '<Say>Press 1 to save, 2 to move to trash, 4 to forward, 5 for next, 7 for slower, 8 to replay, 9 for faster, star for folders, or 0 to end.</Say>';
         return self::xml(($notice ? '<Say>' . escape($notice) . '</Say>' : '') . $this->gather($callback, $content));
+    }
+    /** Private support data only: never include raw exceptions in spoken/XML prompts. */
+    public static function diagnostic(Throwable $error, string $operation): array {
+        $message = $error->getMessage();
+        foreach (['token', 'key', 'browser_key', 'phone_key'] as $name) {
+            $secret = config()[$name];
+            if ($secret !== '') $message = str_replace($secret, '[redacted]', $message);
+        }
+        // Redact unknown signed links/capabilities too, not just configured secrets.
+        $message = preg_replace('~https?://[^\s<>"\x27]+~i', '[URL redacted]', $message);
+        $message = preg_replace('/\bBearer\s+[^\s,;]+/i', 'Bearer [redacted]', $message);
+        $message = preg_replace('/\b(auth|access_token|token|key|signature|sid)=([^\s&]+)/i', '$1=[redacted]', $message);
+        $message = preg_replace('/[\x00-\x1f\x7f]/', ' ', $message);
+        return ['reference' => bin2hex(random_bytes(6)), 'time' => gmdate('c'),
+            'operation' => in_array($operation, ['list', 'audio', 'save', 'trash', 'forward', 'control', 'entry'], true) ? $operation : 'control',
+            'error_class' => get_class($error), 'message' => substr($message, 0, 1000)];
+    }
+    public static function failure(array &$s, Throwable $error, string $callback): string {
+        $s['last_error'] = self::diagnostic($error, $s['operation'] ?? 'control');
+        $operation = $s['last_error']['operation'];
+        $summary = match ($operation) {
+            'list' => 'The voicemail mailbox could not be loaded.',
+            'audio' => 'The audio for this message could not be prepared.',
+            'save' => 'The save request could not be completed.',
+            'trash' => 'The move to trash request could not be completed.',
+            'forward' => 'The forwarding request could not be completed.',
+            default => 'The request could not be completed.',
+        };
+        // Do not roll back the cursor: an upstream save/forward may already have
+        // succeeded before preparation of the following message failed.
+        $s['stage'] = 'menu';
+        return self::xml('<!-- Diagnostic reference: ' . $s['last_error']['reference'] . ' -->'
+            . '<Gather input="dtmf" numDigits="1" timeout="6" action="' . escape($callback) . '"><Say>'
+            . escape($summary . ' Press 8 to retry playback, 5 to skip this message, star for folders, or 0 to end.') . '</Say></Gather>');
     }
     private function current(array $s): ?array { return $s['messages'][$s['index']] ?? null; }
     private function gather(string $callback, string $content, int $digits = 1): string {

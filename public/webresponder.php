@@ -1,5 +1,7 @@
 <?php
 declare(strict_types=1);
+// Keep PHP warning HTML out of the XML protocol; use private diagnostics instead.
+ini_set('display_errors', '0');
 require dirname(__DIR__) . '/src/bootstrap.php';
 securityHeaders(); header('Content-Type: application/xml; charset=UTF-8');
 try {
@@ -33,11 +35,10 @@ try {
     try {
         $xml = (new Phone(new NetSapiens()))->respond($state, input('Digits'), $callback);
     } catch (Throwable $e) {
-        error_log('Voicemail call step failed: ' . get_class($e));
+        $xml = Phone::failure($state, $e, $callback);
+        error_log('Voicemail call step failed: ' . json_encode($state['last_error'], JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_SLASHES));
         // Advance the callback even on error so a successful mutation isn't repeated
         // if preparing the following message's media failed.
-        $state['stage'] = 'menu';
-        $xml = Phone::xml('<Gather input="dtmf" numDigits="1" timeout="6" action="' . escape($callback) . '"><Say>The request could not be completed. Press 8 to replay, star for folders, or 0 to end.</Say></Gather>');
     }
     $state['responses'][$step] = $xml; $state['step'] = $step + 1;
     // Bound replay storage for long calls; recent duplicated callbacks remain idempotent.
@@ -50,7 +51,7 @@ try {
     flock($fp, LOCK_UN); fclose($fp);
     echo $xml;
 } catch (Throwable $e) {
-    error_log('Voicemail responder rejected request: ' . get_class($e));
+    error_log('Voicemail responder rejected request: ' . json_encode(Phone::diagnostic($e, 'entry'), JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_SLASHES));
     http_response_code($e instanceof InvalidArgumentException ? 400 : 500);
     echo Phone::xml('<Say>Voicemail is unavailable or the session has expired. Please call again.</Say><Hangup/>');
 }
