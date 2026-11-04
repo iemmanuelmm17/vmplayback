@@ -29,5 +29,15 @@ jobs:
         run: php tests/run.php --trash-enabled
       - name: Native process I/O and paths with spaces
         run: php tests/process.php
+      - name: Install FFmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg
+      - name: Install FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --no-progress -y
+      - name: Native FFmpeg output, pitch, duration and cache validation
+        run: php tests/audio.php
       - name: Browser JavaScript syntax
-        run: node --check public/assets/app.js
+        run: node --check public/assets/app.js && node --check public/assets/audio.js
+      - name: Browser audio lifecycle
+        run: node tests/browser.mjs

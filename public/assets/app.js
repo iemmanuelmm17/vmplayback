@@ -25,6 +25,8 @@ if (app) {
     $("next").disabled ||= index >= messages.length - 1;
     $("refresh").disabled = busy || !account;
     $("connect-button").disabled = busy;
+    for (const id of ["slower", "faster", "normal-speed"])
+      $(id).disabled = busy;
     document.querySelectorAll("[data-folder]").forEach((button) => {
       button.disabled = busy;
     });
@@ -63,6 +65,8 @@ if (app) {
       await task();
     } catch (error) {
       status(error.message, true);
+      if ($("audio-note").textContent === "Loading audio…")
+        $("audio-note").textContent = error.message;
     } finally {
       busy = false;
       controls();
@@ -126,7 +130,8 @@ if (app) {
     audio.removeAttribute("src");
     audio.load();
   }
-  async function select(n) {
+  async function select(n, options = {}) {
+    const targetRate = options.rate ?? rate;
     stopAudio();
     index = n;
     const version = selectionVersion;
@@ -146,13 +151,34 @@ if (app) {
       trash: "TRASH",
     }[folder];
     if (!m) return;
-    status("Preparing private audio…");
-    const data = await request("audio", { filename: m.filename });
+    status(`Preparing private audio at ${targetRate.toFixed(2)}×…`);
+    $("audio-note").textContent = "Loading audio…";
+    const data = await request("audio", {
+      filename: m.filename,
+      rate: targetRate,
+    });
     if (version !== selectionVersion) return;
-    audio.src = data.url;
-    audio.playbackRate = rate;
-    audio.preservesPitch = true;
+    await VmAudio.load(
+      audio,
+      data.url,
+      options.sourcePosition ?? 0,
+      targetRate,
+    );
+    if (version !== selectionVersion) return;
+    rate = targetRate;
+    $("speed-value").textContent = rate.toFixed(2) + "×";
+    $("audio-note").textContent =
+      "Audio ready. Press Play to listen. Speed is processed once on the server.";
     status(`Message ${index + 1} of ${messages.length}. Ready to listen.`);
+    if (options.autoplay) {
+      try {
+        await audio.play();
+      } catch (error) {
+        if (error.name === "NotAllowedError")
+          status("Audio ready. Press Play to continue.");
+        else throw error;
+      }
+    }
   }
   async function load(preferredIndex = 0) {
     stopAudio();
@@ -194,19 +220,25 @@ if (app) {
     ),
   );
   function changeRate(value) {
-    rate = Math.max(0.5, Math.min(2, value));
-    audio.playbackRate = rate;
-    audio.preservesPitch = true;
-    $("speed-value").textContent = rate.toFixed(2) + "×";
+    const targetRate = Math.max(0.5, Math.min(2, value));
+    if (targetRate === rate || busy) return;
+    if (!current()) {
+      rate = targetRate;
+      $("speed-value").textContent = rate.toFixed(2) + "×";
+      return;
+    }
+    const sourcePosition = VmAudio.sourcePosition(audio, rate);
+    const autoplay = !audio.paused && !audio.ended;
+    run(() => select(index, { rate: targetRate, sourcePosition, autoplay }));
   }
   $("slower").addEventListener("click", () => changeRate(rate - 0.25));
   $("faster").addEventListener("click", () => changeRate(rate + 0.25));
   $("normal-speed").addEventListener("click", () => changeRate(1));
   $("next").addEventListener("click", () => run(() => select(index + 1)));
-  $("replay").addEventListener("click", () => {
-    audio.currentTime = 0;
-    audio.play().catch(() => status("Press play to listen."));
-  });
+  // A new signed URL also recovers stalled/expired downloads, not just decoder errors.
+  $("replay").addEventListener("click", () =>
+    run(() => select(index, { autoplay: true })),
+  );
   for (const action of ["save", "trash"])
     $(action).addEventListener("click", () =>
       run(async () => {
@@ -256,11 +288,28 @@ if (app) {
     });
   });
   audio.addEventListener("error", () => {
+    if (audio.hasAttribute("src")) {
+      $("audio-note").textContent = VmAudio.errorMessage(audio.error);
+      status(VmAudio.errorMessage(audio.error), true);
+    }
+  });
+  audio.addEventListener("waiting", () => {
     if (audio.hasAttribute("src"))
-      status(
-        "Could not play audio. Refresh the mailbox to renew the private audio link.",
-        true,
-      );
+      $("audio-note").textContent =
+        "Buffering audio… If it does not resume, press Replay.";
+  });
+  audio.addEventListener("stalled", () => {
+    if (audio.hasAttribute("src"))
+      $("audio-note").textContent =
+        "The audio download has stalled. Check your connection or press Replay.";
+  });
+  audio.addEventListener("playing", () => {
+    $("audio-note").textContent =
+      `Playing at ${rate.toFixed(2)}×. Pitch-preserving speed is processed on the server.`;
+  });
+  audio.addEventListener("ratechange", () => {
+    // Native browser menus must not time-stretch an already processed WAV.
+    if (audio.playbackRate !== 1) audio.playbackRate = 1;
   });
   document.addEventListener("keydown", (event) => {
     if (

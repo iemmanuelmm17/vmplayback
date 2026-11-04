@@ -1,5 +1,7 @@
 <?php
 declare(strict_types=1);
+// Keep PHP warnings out of JSON responses; diagnostics belong in the server log.
+ini_set('display_errors', '0');
 require dirname(__DIR__) . '/src/bootstrap.php';
 securityHeaders();
 try {
@@ -17,7 +19,9 @@ try {
     $file = filename(input('filename'));
     $message = $api->find($mailbox, $folder, $file);
     switch ($action) {
-        case 'audio': jsonResponse(['url' => Audio::signedUrl(Audio::prepare($mailbox, $message, 1.0))]);
+        case 'audio':
+            $rate = Audio::requestedRate(input('rate', '1'));
+            jsonResponse(['url' => Audio::signedUrl(Audio::prepare($mailbox, $message, $rate, 'browser')), 'rate' => $rate]);
         case 'save': $api->save($mailbox, $folder, $file); break;
         case 'trash': $api->trash($mailbox, $folder, $file); break;
         case 'forward': $api->forward($mailbox, $folder, $file, input('destination')); break;
@@ -26,7 +30,7 @@ try {
     jsonResponse(['ok' => true]);
 } catch (InvalidArgumentException $e) { jsonResponse(['error' => $e->getMessage()], 400); }
 catch (Throwable $e) {
-    error_log('Voicemail browser request failed: ' . get_class($e));
+    error_log('Voicemail browser request failed: ' . get_class($e) . ': ' . $e->getMessage());
     // Messages are application-authored; never expose upstream bodies or signed URLs.
     jsonResponse(['error' => $e instanceof RuntimeException ? $e->getMessage() : 'Voicemail is temporarily unavailable.'], 502);
 }

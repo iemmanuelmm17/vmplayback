@@ -1,6 +1,6 @@
 # VM Playback
 
-A small PHP voicemail player for a browser **and** NetSapiens Web Responder calls. Browser playback speed changes in place; phone playback uses pitch-preserving FFmpeg `atempo` conversion and restarts the current message at the new speed. No Composer, JavaScript build step, database, or external TTS vendor code is needed. Phone prompts use the PBX's configured Voice Services/TTS integration.
+A small PHP voicemail player for a browser **and** NetSapiens Web Responder calls. Both players use pitch-preserving FFmpeg `atempo` conversion. Browser speed changes briefly reload audio and resume near the same source position; phone speed changes restart the current message. No Composer, JavaScript build step, database, or external TTS vendor code is needed. Phone prompts use the PBX's configured Voice Services/TTS integration.
 
 ## Requirements
 
@@ -114,13 +114,13 @@ Sign in with `BROWSER_ACCESS_KEY`. The domain/extension fields can be prefilled 
 
 - Browse **New**, **Saved**, or **Trash**. Messages are ordered newest first.
 - Select a message, then press the native audio Play control. Browser autoplay is deliberately not required.
-- Use **− / +** for 0.50×–2.00× playback, in 0.25× steps, without changing pitch where the browser supports it. Speed carries over to the next message.
+- Use **− / +** for 0.50×–2.00× playback, in 0.25× steps. The server prepares pitch-preserving audio at the chosen speed, then the browser resumes near the same source position (with a brief loading pause). Speed carries over to the next message. The native audio playback rate stays at 1× to avoid stretching the speech twice. Use the application’s speed buttons, not the browser’s native speed menu.
 - Save, move to trash (with confirmation), or forward to a numeric extension in the same domain. Forwarding may move the original, according to the API; the mailbox is refreshed afterward.
 - Save a trashed message to restore it. Trash cannot be deleted again or forwarded until restored.
 - Keyboard shortcuts mirror the phone keys when focus is not in an input, button, or dialog.
 - Web login lasts eight hours. Log out when finished. Login has a per-IP limit of ten failed attempts per fifteen minutes; add reverse-proxy rate limiting too, especially if PHP sees only a proxy's IP.
 
-All metadata/actions use server-side API calls. The browser never receives the API token or upstream signed media URL. Audio is normalized to phone-compatible 8 kHz mono PCM WAV; the browser uses its native `playbackRate` for speed changes.
+All metadata/actions use server-side API calls. The browser never receives the API token or upstream signed media URL. Browser audio uses 48 kHz PCM WAV instead of the telephone-only 8 kHz format. Phone audio remains compatible 8 kHz mono. Speed processing resamples to 48 kHz before stretching and only downsamples for phone delivery. At 1× no tempo filter is run. Upsampling cannot restore detail missing from the original recording; extreme 0.5×/2× speeds can still sound less natural than 0.75×–1.25×.
 
 ## Phone / Web Responder setup
 
@@ -195,6 +195,17 @@ Run hourly as the same OS user as PHP:
 
 The cleanup script removes audio unused for four hours, expired call sessions, stale conversion intermediates, and old login-throttle records. Zero-byte audio lock files remain intentionally so concurrent workers always lock the same inode. Monitor disk usage and apply a suitable volume quota. Treat this cache as sensitive voicemail content; use encrypted storage if required by your policies. Signed media links last one hour and work without browser cookies, so treat them as bearer capabilities. An issued link is not immediately revoked by logout or moving the message to trash. Rotate `APP_KEY` to invalidate all outstanding media links.
 
+## Intermittent silence / playback troubleshooting
+
+After updating, hard-refresh the browser (Ctrl+F5). Assets and rendered audio have new version keys, so old narrowband cache files are not reused; no manual deletion of `var/` is needed.
+
+- The browser waits for WAV metadata and a positive duration before reporting audio ready. It reports decode/download failures, loading timeouts, buffering, and stalled downloads instead of silently claiming success.
+- **Replay** requests a new signed media link and retries the current message, including when an older link expired. There are no uncontrolled automatic retries. If the browser blocks resuming after a speed change, press the native Play control.
+- Empty/header-only and truncated rendered WAVs are rejected. Invalid cached files are removed and re-fetched. This does not detect a legitimate recording containing only silence; compare another message and the original recording in the PBX portal.
+- In Developer Tools → Network, check `api.php` and `media.php`. A media `200` or `206` is expected; `403` indicates an invalid/expired link, `404` a missing cache entry, and `422` an invalid WAV. The API returns a readable conversion/download error. Do not share signed media URLs or tokens in screenshots/logs.
+- PHP warnings, output buffering and compression can corrupt binary/range responses. `media.php` disables PHP compression and clears output buffers before serving WAV bytes, locks the cache during delivery, and refreshes its last-used time. Keep `display_errors=Off` and check your private PHP log.
+- Larger browser WAVs use more disk and bandwidth than narrowband phone files. Keep the existing cleanup job and monitor storage. Genuine upstream silence or poor source quality cannot be repaired by changing playback speed.
+
 ## Tests
 
 ```sh
@@ -202,10 +213,13 @@ find src public tests bin -name '*.php' -exec php -l {} \;
 php tests/run.php
 php tests/run.php --trash-enabled
 php tests/process.php
+php tests/audio.php  # Requires native PHP and FFmpeg
 node --check public/assets/app.js
+node --check public/assets/audio.js
+node tests/browser.mjs
 ```
 
-The offline tests cover request paths and JSON, response normalization, allowlisting/path validation, trash safeguards, signed audio/ranges, XML escaping, DTMF speed/navigation, forward confirmation/cancellation, folder switching, restoration, and timeout/hangup handling. The transport and audio renderer are replaced by test doubles; they do not contact or modify a live PBX. `tests/process.php` separately checks native child-process startup, null-device I/O, and arguments with spaces. CI runs both suites on Windows and Linux with PHP 8.2 and 8.4.
+The offline tests cover request paths and JSON, response normalization, allowlisting/path validation, trash safeguards, signed audio/ranges, XML escaping, DTMF speed/navigation, forward confirmation/cancellation, folder switching, restoration, and timeout/hangup handling. The transport and audio renderer are replaced by test doubles; they do not contact or modify a live PBX. `tests/process.php` separately checks native child-process startup, null-device I/O, and arguments with spaces. `tests/audio.php` renders a synthetic tone with real FFmpeg at all seven speeds, checks duration/pitch/non-silence for browser and phone profiles, and exercises invalid-cache replacement. `tests/browser.mjs` tests metadata readiness, seeking across speeds, native rate 1×, errors, and timeouts using a fake media element (not a real browser decoder). CI runs these suites on Windows and Linux with PHP 8.2 and 8.4. These automated checks cannot establish perceptual voice quality; listening on the actual browser and phone remains necessary.
 
 **Before production:** test an actual call on your core, DTMF interruption, empty Gather timeout callbacks, WAV codec delivery, forwarding to a test extension, and verified trash/restore behavior. Check that media fetches and callbacks work without browser cookies. Network access to the supplied PBX and a usable token are not part of the offline tests.
 
