@@ -201,15 +201,26 @@ The phone first announces the message number/caller, then plays audio inside Gat
 
 ### Caller ID speech and phone WAV compatibility
 
-Caller numbers and forwarding extensions are announced as explicit digit words: `1332` becomes “one, three, three, two,” not “one thousand three hundred thirty-two.” Leading zeroes are retained; spaces, parentheses, hyphens and a leading plus are normalized. Anonymous/alphanumeric caller labels remain text. This does not rely on unsupported SSML attributes.
+Caller-ID formatting is configurable, without relying on unsupported SSML attributes:
 
-The default phone WAV stays **8 kHz, mono, signed 16-bit little-endian PCM**. Screeching alone does not establish a format mismatch. First compare the same message at **1×** in the browser and on the phone, and note whether the generated TTS prompts are also distorted:
+```dotenv
+CALLER_ID_DIGIT_STYLE=hyphens
+CALLER_ID_STRIP_US_COUNTRY_CODE=false
+```
+
+Styles are `hyphens` (default), `commas`, `spaces`, and `words`. For `12622409605`, the default is `1-2-6-2-2-4-0-9-6-0-5`; `commas` produces `1, 2, 6, 2, 2, 4, 0, 9, 6, 0, 5`; `words` produces explicit English digit words. The actual TTS vendor determines how punctuation is pronounced, so compare hyphens/commas or use `words` if it still treats digits as an integer.
+
+To announce this example as exactly `2-6-2-2-4-0-9-6-0-5`, enable `CALLER_ID_STRIP_US_COUNTRY_CODE=true`. This drops a leading `1` **only for 11-digit numeric caller IDs**. It is off by default and does not modify stored caller metadata. Leading zeroes, other international prefixes, and anonymous/alphanumeric labels are preserved. Formatting spaces, parentheses, hyphens and a leading plus are normalized. Forwarding extension confirmation remains explicit digit words, unaffected by caller-ID settings.
+
+Fresh responder XML includes `<!-- vmplayback phone-v3 -->`. If the XML still says `From 12622409605.` or lacks that marker, verify that **all changed PHP files**, including `src/Phone.php`, reached the correct server directory. Restart/recycle PHP/IIS/Apache to clear stale OPcache, and start a **new call**. Retried callbacks can legitimately return old saved XML from the existing call session. Do not disable replay protection to work around deployment caching.
+
+The phone default is now **8,000 Hz, mono, G.711 mu-law WAV** (`pcm_mulaw`, 8-bit companded samples). Existing `.env` files override this default: explicitly replace an old `PHONE_AUDIO_CODEC=pcm_s16le` entry if it is still present. Browser output remains 48 kHz 16-bit PCM. Screeching alone does not establish a format mismatch. First compare the same message at **1×** in the browser and on the phone, and note whether the generated TTS prompts are also distorted:
 
 - If only voicemail `<Play>` is distorted on the phone, compare WAV decoder compatibility and media delivery. Locally playing the exact cached phone WAV helps distinguish an encoded-file problem from a core/playback problem.
 - If TTS prompts are distorted too, changing this app's voicemail WAV codec will not fix the core-generated TTS audio; investigate the core's voice services, negotiated SIP/RTP codec, endpoint and audio path.
 - If distortion happens only at non-1× speeds, reset to 1× and compare before changing codecs. Extreme tempo changes may sound less natural even when decoding is correct.
 
-For a **controlled phone-only compatibility test**, this app also supports G.711 inside a proper WAV container. In `.env`:
+To select the requested phone format explicitly, set this in `.env`:
 
 ```dotenv
 PHONE_AUDIO_CODEC=pcm_mulaw
@@ -219,11 +230,11 @@ Allowed values:
 
 | Value | Phone WAV encoding |
 | --- | --- |
-| `pcm_s16le` (default) | 8 kHz mono 16-bit linear PCM |
-| `pcm_mulaw` | 8 kHz mono 8-bit G.711 mu-law |
+| `pcm_s16le` | 8 kHz mono 16-bit linear PCM |
+| `pcm_mulaw` (default) | 8 kHz mono 8-bit G.711 mu-law |
 | `pcm_alaw` | 8 kHz mono 8-bit G.711 A-law |
 
-Restart/recycle PHP, then make a **new call** and test at 1×. If it is not better or the core cannot decode it, restore `PHONE_AUDIO_CODEC=pcm_s16le`. Do not assume that the WAV codec must match the call's negotiated SIP codec; this setting tests the core's file decoder, not RTP negotiation. Browser audio remains 48 kHz 16-bit PCM in every mode. The cache key includes the phone codec, so no manual deletion of audio files is required. Both the cache validator and media endpoint recognize the correct PCM/G.711 WAV headers and byte rates; raw companded bytes are never mislabeled as linear PCM.
+Restart/recycle PHP, then make a **new call** and test at 1×. If the core cannot decode mu-law WAV, you can explicitly select `PHONE_AUDIO_CODEC=pcm_s16le` for comparison; the screeching symptom alone does not confirm a codec mismatch. Do not assume that the WAV codec must match the call's negotiated SIP codec; this setting tests the core's file decoder, not RTP negotiation. Browser audio remains 48 kHz 16-bit PCM in every mode. The cache key includes the phone codec, so no manual deletion of audio files is required. Both the cache validator and media endpoint recognize the correct PCM/G.711 WAV headers and byte rates; raw companded bytes are never mislabeled as linear PCM.
 
 To inspect the most recently used cached WAV locally on Windows (adjust the FFmpeg installation path), make only the test phone call immediately before running:
 
@@ -281,6 +292,8 @@ After updating, hard-refresh the browser (Ctrl+F5). Assets and rendered audio ha
 find src public tests bin -name '*.php' -exec php -l {} \;
 php tests/run.php
 php tests/run.php --trash-enabled
+php tests/phone-config.php hyphens
+php tests/phone-config.php commas
 php tests/process.php
 php tests/audio.php  # Requires native PHP and FFmpeg
 node --check public/assets/app.js
@@ -288,7 +301,7 @@ node --check public/assets/audio.js
 node tests/browser.mjs
 ```
 
-The offline tests cover request paths and JSON, response normalization, allowlisting/path validation, trash safeguards, signed audio/ranges, XML escaping, DTMF speed/navigation, forward confirmation/cancellation, folder switching, restoration, and timeout/hangup handling. The transport and audio renderer are replaced by test doubles; they do not contact or modify a live PBX. `tests/process.php` separately checks native child-process startup, null-device I/O, and arguments with spaces. `tests/audio.php` renders a synthetic tone with real FFmpeg at all seven speeds, checks codec headers, duration/pitch/non-silence for browser PCM and phone PCM/mu-law/A-law profiles (decoding G.711 back to PCM for waveform checks), and exercises invalid-cache replacement. Unit tests verify caller/extension speech, codec allowlisting, header validation, and codec-aware cache keys. `tests/browser.mjs` tests metadata readiness, seeking across speeds, native rate 1×, errors, and timeouts using a fake media element (not a real browser decoder). CI runs these suites on Windows and Linux with PHP 8.2 and 8.4. These automated checks cannot establish perceptual voice quality; listening on the actual browser and phone remains necessary.
+The offline tests cover request paths and JSON, response normalization, allowlisting/path validation, trash safeguards, signed audio/ranges, XML escaping, DTMF speed/navigation, forward confirmation/cancellation, folder switching, restoration, and timeout/hangup handling. The transport and audio renderer are replaced by test doubles; they do not contact or modify a live PBX. `tests/process.php` separately checks native child-process startup, null-device I/O, and arguments with spaces. `tests/audio.php` renders a synthetic tone with real FFmpeg at all seven speeds, checks codec headers, duration/pitch/non-silence for browser PCM and phone PCM/mu-law/A-law profiles (decoding G.711 back to PCM for waveform checks), and exercises invalid-cache replacement. Unit tests verify caller/extension speech, codec allowlisting, header validation, and codec-aware cache keys. `tests/phone-config.php` checks actual generated XML with hyphen/comma configuration, optional country-code removal, unchanged metadata, and the deployment marker in separate PHP processes. `tests/browser.mjs` tests metadata readiness, seeking across speeds, native rate 1×, errors, and timeouts using a fake media element (not a real browser decoder). CI runs these suites on Windows and Linux with PHP 8.2 and 8.4. These automated checks cannot establish perceptual voice quality; listening on the actual browser and phone remains necessary.
 
 **Before production:** test an actual call on your core, DTMF interruption, empty Gather timeout callbacks, WAV codec delivery, forwarding to a test extension, and verified trash/restore behavior. Check that media fetches and callbacks work without browser cookies. Network access to the supplied PBX and a usable token are not part of the offline tests.
 

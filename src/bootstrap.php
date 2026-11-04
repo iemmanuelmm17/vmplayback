@@ -24,7 +24,9 @@ function config(): array {
         'media_hosts' => array_filter(array_map('trim', explode(',', env('MEDIA_ALLOWED_HOSTS', 'nms1.nyc.birns.net')))),
         'storage' => env('STORAGE_PATH', dirname(__DIR__) . '/var'),
         'ffmpeg' => env('FFMPEG_BIN', 'ffmpeg'),
-        'phone_codec' => env('PHONE_AUDIO_CODEC', 'pcm_s16le'),
+        'phone_codec' => env('PHONE_AUDIO_CODEC', 'pcm_mulaw'),
+        'caller_digit_style' => env('CALLER_ID_DIGIT_STYLE', 'hyphens'),
+        'caller_strip_us_code' => env('CALLER_ID_STRIP_US_COUNTRY_CODE', 'false') === 'true',
         'trash_confirmed' => env('NS_DELETE_MOVES_TO_TRASH', 'false') === 'true',
     ];
     return $config;

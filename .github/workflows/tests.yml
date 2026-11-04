@@ -27,6 +27,8 @@ jobs:
         run: php tests/run.php
       - name: Trash enabled
         run: php tests/run.php --trash-enabled
+      - name: Configured caller XML and phone format
+        run: php tests/phone-config.php hyphens && php tests/phone-config.php commas
       - name: Native process I/O and paths with spaces
         run: php tests/process.php
       - name: Install FFmpeg (Linux)

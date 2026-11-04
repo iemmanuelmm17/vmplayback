@@ -5,7 +5,9 @@ putenv('APP_URL=https://voicemail.example.test');
 putenv('APP_KEY=' . str_repeat('k', 48));
 putenv('ALLOWED_MAILBOXES=6001@1180.DynaCloud');
 putenv('MEDIA_ALLOWED_HOSTS=nms1.nyc.birns.net');
-putenv('PHONE_AUDIO_CODEC=pcm_s16le');
+putenv('PHONE_AUDIO_CODEC=pcm_mulaw');
+putenv('CALLER_ID_DIGIT_STYLE=hyphens');
+putenv('CALLER_ID_STRIP_US_COUNTRY_CODE=false');
 putenv('NS_DELETE_MOVES_TO_TRASH=' . (in_array('--trash-enabled', $argv, true) ? 'true' : 'false'));
 require dirname(__DIR__) . '/src/bootstrap.php';
 $tests = 0;
@@ -25,6 +27,16 @@ check(Phone::spokenNumber('+1 (332) 219-8737') === Phone::spokenNumber('13322198
 check(Phone::spokenNumber('006001') === 'zero, zero, six, zero, zero, one', 'leading zeroes are spoken');
 check(Phone::spokenNumber('Anonymous') === 'Anonymous' && Phone::spokenNumber('Agent 7') === 'Agent 7', 'non-numeric caller labels are preserved');
 check(Phone::spokenNumber('') === 'unknown caller', 'empty caller has a safe fallback');
+check(Phone::callerNumber('12622409605') === '1-2-6-2-2-4-0-9-6-0-5', 'caller uses hyphens without silently discarding country code');
+check(Phone::callerNumber('12622409605', 'hyphens', true) === '2-6-2-2-4-0-9-6-0-5', 'optional US country-code removal matches requested example');
+check(Phone::callerNumber('+1 (262) 240-9605', 'commas', true) === '2, 6, 2, 2, 4, 0, 9, 6, 0, 5', 'comma-separated caller ID is configurable');
+check(Phone::callerNumber('12622409605', 'spaces', true) === '2 6 2 2 4 0 9 6 0 5', 'space-separated caller ID is configurable');
+check(Phone::callerNumber('12622409605', 'words', true) === 'two, six, two, two, four, zero, nine, six, zero, five', 'explicit digit words remain available');
+check(Phone::callerNumber('006001', 'hyphens', true) === '0-0-6-0-0-1', 'country-code preference preserves leading zeroes and extensions');
+check(Phone::callerNumber('442079460123', 'hyphens', true) === '4-4-2-0-7-9-4-6-0-1-2-3', 'other international prefixes are not removed');
+check(Phone::callerNumber('Anonymous', 'commas', true) === 'Anonymous', 'non-numeric caller label is unchanged');
+check(Phone::spokenNumber('6002') === 'six, zero, zero, two', 'forwarding speech ignores caller-ID-only settings');
+rejects(fn() => Phone::callerNumber('12622409605', 'unsupported'), 'invalid caller speech style rejected');
 $mb = mailbox('1180.DynaCloud', '6001');
 check($mb['user'] === '6001', 'mailbox identity');
 rejects(fn() => mailbox('../bad', '6001'), 'domain traversal');
@@ -85,7 +97,10 @@ foreach (['pcm_s16le', 'pcm_mulaw', 'pcm_alaw'] as $codec) {
     check($command[array_search('-c:a', $command, true) + 1] === $codec, 'phone codec is explicitly selected');
     check($command[count($command) - 3] === '-f' && $command[count($command) - 2] === 'wav', 'all phone codecs remain in a WAV container');
 }
-check(Audio::codec('phone') === 'pcm_s16le', 'existing PCM default is unchanged');
+check(Audio::codec('phone') === 'pcm_mulaw', 'phone uses the requested mu-law setting');
+check($phoneCommand[array_search('-c:a', $phoneCommand, true) + 1] === 'pcm_mulaw'
+    && $phoneCommand[array_search('-ar', $phoneCommand, true) + 1] === '8000'
+    && $phoneCommand[array_search('-ac', $phoneCommand, true) + 1] === '1', 'phone command explicitly renders 8000 Hz mono mu-law WAV');
 rejects(fn() => Audio::codec('phone', 'mp3'), 'unsupported phone codec is rejected');
 check(Audio::codec('browser', 'pcm_mulaw') === 'pcm_s16le', 'G.711 setting cannot change browser audio');
 check(Audio::cacheId($mb, $record['filename'], 1, 'phone', 'pcm_s16le') !== Audio::cacheId($mb, $record['filename'], 1, 'phone', 'pcm_mulaw'), 'codec changes invalidate phone cache automatically');
@@ -137,7 +152,8 @@ function step(Phone $phone, array &$s, string $digits): string {
 }
 $xml = step($phone, $s, '');
 check(str_contains($xml, '<Gather input="dtmf"') && str_contains($xml, '<Play>') && str_contains($xml, '&amp;signature='), 'initial gather with private WAV playback');
-check(str_contains($xml, 'From one, three, three, two, two, one, nine, eight, seven, three, seven.') && !str_contains($xml, 'From 13322198737'), 'emitted Say uses digit words for caller ID');
+check(str_contains($xml, 'From 1-3-3-2-2-1-9-8-7-3-7.') && !str_contains($xml, 'From 13322198737'), 'emitted Say uses configured separators for caller ID');
+check(str_contains($xml, '<!-- vmplayback phone-v3 -->'), 'fresh responder XML identifies the updated code version');
 step($phone, $s, '7'); check($s['rate'] === .75 && end($audioCalls)[2] === .75 && $s['index'] === 0, '7 slower replays current');
 step($phone, $s, '9'); check($s['rate'] === 1.0, '9 faster');
 step($phone, $s, '8'); check($s['index'] === 0, '8 replay does not skip');
