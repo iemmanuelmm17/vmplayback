@@ -5,6 +5,7 @@ putenv('APP_URL=https://voicemail.example.test');
 putenv('APP_KEY=' . str_repeat('k', 48));
 putenv('ALLOWED_MAILBOXES=6001@1180.DynaCloud');
 putenv('MEDIA_ALLOWED_HOSTS=nms1.nyc.birns.net');
+putenv('PHONE_AUDIO_CODEC=pcm_s16le');
 putenv('NS_DELETE_MOVES_TO_TRASH=' . (in_array('--trash-enabled', $argv, true) ? 'true' : 'false'));
 require dirname(__DIR__) . '/src/bootstrap.php';
 $tests = 0;
@@ -19,6 +20,11 @@ function rejects(callable $fn, string $message): void {
 check(Audio::processDescriptors('Windows') === [0 => ['file', 'NUL', 'r'], 1 => ['file', 'NUL', 'w'], 2 => ['file', 'NUL', 'w']], 'Windows process I/O uses NUL, not /dev/null');
 check(Audio::processDescriptors('Linux') === [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], 'Unix process I/O uses /dev/null');
 check(Audio::processDescriptors() === Audio::processDescriptors(PHP_OS_FAMILY), 'process I/O follows the host OS');
+check(Phone::spokenNumber('13322198737') === 'one, three, three, two, two, one, nine, eight, seven, three, seven', 'caller ID is explicit digit words, not a large integer');
+check(Phone::spokenNumber('+1 (332) 219-8737') === Phone::spokenNumber('13322198737'), 'formatted caller ID is normalized for digit speech');
+check(Phone::spokenNumber('006001') === 'zero, zero, six, zero, zero, one', 'leading zeroes are spoken');
+check(Phone::spokenNumber('Anonymous') === 'Anonymous' && Phone::spokenNumber('Agent 7') === 'Agent 7', 'non-numeric caller labels are preserved');
+check(Phone::spokenNumber('') === 'unknown caller', 'empty caller has a safe fallback');
 $mb = mailbox('1180.DynaCloud', '6001');
 check($mb['user'] === '6001', 'mailbox identity');
 rejects(fn() => mailbox('../bad', '6001'), 'domain traversal');
@@ -74,6 +80,16 @@ check(Audio::cacheId($mb, $record['filename'], 1, 'phone') !== hash('sha256', js
 check(Audio::requestedRate('1.00') === 1.0 && Audio::requestedRate('0.75') === .75, 'valid API playback rates');
 foreach (['NAN', 'INF', '1e309', '0', '4', '1.1', ''] as $badRate) rejects(fn() => Audio::requestedRate($badRate), 'invalid playback rate rejected');
 rejects(fn() => Audio::command('a', 'b', 1, 'invalid'), 'unknown audio profile rejected');
+foreach (['pcm_s16le', 'pcm_mulaw', 'pcm_alaw'] as $codec) {
+    $command = Audio::command('source.wav', 'target.wav', 1, 'phone', $codec);
+    check($command[array_search('-c:a', $command, true) + 1] === $codec, 'phone codec is explicitly selected');
+    check($command[count($command) - 3] === '-f' && $command[count($command) - 2] === 'wav', 'all phone codecs remain in a WAV container');
+}
+check(Audio::codec('phone') === 'pcm_s16le', 'existing PCM default is unchanged');
+rejects(fn() => Audio::codec('phone', 'mp3'), 'unsupported phone codec is rejected');
+check(Audio::codec('browser', 'pcm_mulaw') === 'pcm_s16le', 'G.711 setting cannot change browser audio');
+check(Audio::cacheId($mb, $record['filename'], 1, 'phone', 'pcm_s16le') !== Audio::cacheId($mb, $record['filename'], 1, 'phone', 'pcm_mulaw'), 'codec changes invalidate phone cache automatically');
+check(Audio::cacheId($mb, $record['filename'], 1, 'browser', 'pcm_s16le') === Audio::cacheId($mb, $record['filename'], 1, 'browser', 'pcm_mulaw'), 'browser cache is independent of phone codec');
 $tempWav = tempnam(sys_get_temp_dir(), 'vmplayback-wav-');
 try {
     $fmt = 'fmt ' . pack('VvvVVvv', 16, 1, 1, 8000, 16000, 2, 16);
@@ -87,6 +103,15 @@ try {
     $empty = $fmt . 'data' . pack('V', 0);
     file_put_contents($tempWav, 'RIFF' . pack('V', strlen($empty) + 4) . 'WAVE' . $empty);
     check(Audio::wavInfo($tempWav) === null, 'header-only WAV rejected');
+    foreach ([6 => 'pcm_alaw', 7 => 'pcm_mulaw'] as $tag => $codec) {
+        $g711 = 'fmt ' . pack('VvvVVvv', 16, $tag, 1, 8000, 8000, 1, 8) . 'data' . pack('V', 800) . str_repeat("\xff", 800);
+        file_put_contents($tempWav, 'RIFF' . pack('V', strlen($g711) + 4) . 'WAVE' . $g711);
+        $info = Audio::wavInfo($tempWav);
+        check($info !== null && $info['codec'] === $codec && $info['bits'] === 8 && abs($info['duration'] - .1) < .0001, 'G.711 WAV header and duration are recognized');
+        $g711 = 'fmt ' . pack('VvvVVvv', 16, $tag, 1, 8000, 16000, 2, 16) . 'data' . pack('V', 800) . str_repeat("\0", 800);
+        file_put_contents($tempWav, 'RIFF' . pack('V', strlen($g711) + 4) . 'WAVE' . $g711);
+        check(Audio::wavInfo($tempWav) === null, 'G.711 header mislabeled as 16-bit PCM is rejected');
+    }
     file_put_contents($tempWav, '<html>upstream error</html>');
     check(Audio::wavInfo($tempWav) === null, 'non-audio cache rejected');
 } finally { unlink($tempWav); }
@@ -112,12 +137,14 @@ function step(Phone $phone, array &$s, string $digits): string {
 }
 $xml = step($phone, $s, '');
 check(str_contains($xml, '<Gather input="dtmf"') && str_contains($xml, '<Play>') && str_contains($xml, '&amp;signature='), 'initial gather with private WAV playback');
+check(str_contains($xml, 'From one, three, three, two, two, one, nine, eight, seven, three, seven.') && !str_contains($xml, 'From 13322198737'), 'emitted Say uses digit words for caller ID');
 step($phone, $s, '7'); check($s['rate'] === .75 && end($audioCalls)[2] === .75 && $s['index'] === 0, '7 slower replays current');
 step($phone, $s, '9'); check($s['rate'] === 1.0, '9 faster');
 step($phone, $s, '8'); check($s['index'] === 0, '8 replay does not skip');
 $before = count($calls); $xml = step($phone, $s, '4');
 check($s['stage'] === 'destination' && str_contains($xml, 'numDigits="12"') && count($calls) === $before, 'forward asks for extension without mutation');
-step($phone, $s, '6002'); check($s['stage'] === 'confirm' && count($calls) === $before, 'forward confirmation');
+$xml = step($phone, $s, '6002'); check($s['stage'] === 'confirm' && count($calls) === $before, 'forward confirmation');
+check(str_contains($xml, 'extension six, zero, zero, two.'), 'forward confirmation also speaks extension digit by digit');
 step($phone, $s, '2'); check($s['stage'] === 'menu' && count($calls) === $before, 'cancel forward');
 step($phone, $s, '4'); step($phone, $s, '6002'); step($phone, $s, '1');
 check(end($calls)[0] === 'PATCH' && str_ends_with(end($calls)[1], '/forward') && $s['index'] === 1, 'confirm forwards and advances');
