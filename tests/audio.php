@@ -4,6 +4,7 @@ declare(strict_types=1);
 $directory = sys_get_temp_dir() . '/vmplayback audio ' . bin2hex(random_bytes(8));
 mkdir($directory, 0700);
 putenv('STORAGE_PATH=' . $directory . '/cache');
+putenv('PHONE_AUDIO_CODEC=pcm_mulaw');
 require dirname(__DIR__) . '/src/bootstrap.php';
 $source = $directory . '/source with spaces.wav';
 $target = $directory . '/rendered.wav';
@@ -19,6 +20,10 @@ try {
     for ($i = 0; $i < 16000; $i++) $data .= pack('v', ((int)round(sin(2 * M_PI * 440 * $i / 8000) * 10000)) & 0xffff);
     $chunks = 'fmt ' . pack('VvvVVvv', 16, 1, 1, 8000, 16000, 2, 16) . 'data' . pack('V', strlen($data)) . $data;
     file_put_contents($source, 'RIFF' . pack('V', strlen($chunks) + 4) . 'WAVE' . $chunks);
+    Audio::convert($source, $target, 1, 'phone');
+    $defaultPhone = Audio::wavInfo($target);
+    verifyAudio($defaultPhone !== null && $defaultPhone['codec'] === 'pcm_mulaw' && $defaultPhone['sample_rate'] === 8000
+        && $defaultPhone['channels'] === 1 && $defaultPhone['bits'] === 8, 'configured phone output is actual 8000 Hz mono G.711 mu-law WAV');
     foreach ([['browser', null], ['phone', 'pcm_s16le'], ['phone', 'pcm_mulaw'], ['phone', 'pcm_alaw']] as [$profile, $phoneCodec]) {
         foreach ([.5, .75, 1.0, 1.25, 1.5, 1.75, 2.0] as $rate) {
             Audio::convert($source, $target, $rate, $profile, $phoneCodec);

@@ -5,16 +5,34 @@ final class Phone {
     public function __construct(private NetSapiens $api, private mixed $audio = null) {
         $this->audio ??= static fn($mailbox, $message, $rate) => Audio::signedUrl(Audio::prepare($mailbox, $message, $rate));
     }
-    /** Explicit words avoid TTS normalizing a digit string into a large integer. */
-    public static function spokenNumber(string $value): string {
+    private static function numberDigits(string $value): ?string {
+        $value = trim($value);
+        if (!preg_match('/\A\+?[0-9().\s-]+\z/', $value) || !preg_match('/[0-9]/', $value)) return null;
+        return preg_replace('/[^0-9]/', '', $value);
+    }
+    /** Format only numeric phone labels; never extract digits from names/SIP URIs. */
+    public static function spokenNumber(string $value, string $style = 'words'): string {
+        if (!in_array($style, ['words', 'hyphens', 'commas', 'spaces'], true)) {
+            throw new InvalidArgumentException('CALLER_ID_DIGIT_STYLE must be words, hyphens, commas, or spaces.');
+        }
         $value = trim($value);
         if ($value === '') return 'unknown caller';
-        // Leave anonymous/alphanumeric caller labels intact; do not extract digits
-        // from a person's name or a SIP address. Normalize only phone formatting.
-        if (!preg_match('/\A\+?[0-9().\s-]+\z/', $value) || !preg_match('/[0-9]/', $value)) return $value;
-        $digits = preg_replace('/[^0-9]/', '', $value);
+        $digits = self::numberDigits($value);
+        if ($digits === null) return $value;
+        if ($style !== 'words') {
+            $separator = match ($style) { 'hyphens' => '-', 'commas' => ', ', 'spaces' => ' ' };
+            return implode($separator, str_split($digits));
+        }
         $words = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
         return implode(', ', array_map(static fn($digit) => $words[(int)$digit], str_split($digits)));
+    }
+    public static function callerNumber(string $value, ?string $style = null, ?bool $stripUsCode = null): string {
+        $digits = self::numberDigits($value);
+        $stripUsCode ??= config()['caller_strip_us_code'];
+        // Never silently remove digits from extensions, leading-zero identifiers,
+        // or non-NANP numbers. This is an explicit announcement-only preference.
+        if ($stripUsCode && $digits !== null && strlen($digits) === 11 && $digits[0] === '1') $value = substr($digits, 1);
+        return self::spokenNumber($value, $style ?? config()['caller_digit_style']);
     }
     public static function initial(array $mailbox, string $folder): array {
         return ['mailbox' => $mailbox, 'folder' => folder($folder), 'messages' => null, 'index' => 0, 'rate' => 1.0,
@@ -83,7 +101,7 @@ final class Phone {
         if ($play) {
             $s['operation'] = 'audio';
             $media = ($this->audio)($s['mailbox'], $m, $s['rate']);
-            $notice .= ' Message ' . ($s['index'] + 1) . ' of ' . count($s['messages']) . '. From ' . self::spokenNumber($m['number'] ?: $m['name']) . '.';
+            $notice .= ' Message ' . ($s['index'] + 1) . ' of ' . count($s['messages']) . '. From ' . self::callerNumber($m['number'] ?: $m['name']) . '.';
             $content .= '<Play>' . escape($media) . '</Play>';
         }
         $content .= '<Say>Press 1 to save, 2 to move to trash, 4 to forward, 5 for next, 7 for slower, 8 to replay, 9 for faster, star for folders, or 0 to end.</Say>';
@@ -129,5 +147,5 @@ final class Phone {
     }
     private function folderMenu(string $callback): string { return self::xml($this->gather($callback, '<Say>Press 1 for new messages, 2 for saved messages, 3 for trash, or 0 to end.</Say>')); }
     private function destinationMenu(string $callback): string { return self::xml($this->gather($callback, '<Say>Enter the destination extension, then wait three seconds. Press star to cancel.</Say>', 12)); }
-    public static function xml(string $body): string { return '<?xml version="1.0" encoding="UTF-8"?><Response>' . $body . '</Response>'; }
+    public static function xml(string $body): string { return '<?xml version="1.0" encoding="UTF-8"?><Response><!-- vmplayback phone-v3 -->' . $body . '</Response>'; }
 }
