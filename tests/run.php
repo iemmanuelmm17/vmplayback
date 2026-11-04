@@ -16,6 +16,9 @@ function rejects(callable $fn, string $message): void {
     try { $fn(); } catch (Throwable) { check(true, $message); return; }
     check(false, $message);
 }
+check(Audio::processDescriptors('Windows') === [0 => ['file', 'NUL', 'r'], 1 => ['file', 'NUL', 'w'], 2 => ['file', 'NUL', 'w']], 'Windows process I/O uses NUL, not /dev/null');
+check(Audio::processDescriptors('Linux') === [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], 'Unix process I/O uses /dev/null');
+check(Audio::processDescriptors() === Audio::processDescriptors(PHP_OS_FAMILY), 'process I/O follows the host OS');
 $mb = mailbox('1180.DynaCloud', '6001');
 check($mb['user'] === '6001', 'mailbox identity');
 rejects(fn() => mailbox('../bad', '6001'), 'domain traversal');
