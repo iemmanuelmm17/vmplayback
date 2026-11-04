@@ -6,9 +6,13 @@ permissions:
   contents: read
 jobs:
   php:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     strategy:
       matrix:
+        os: [ubuntu-latest, windows-latest]
         php: ['8.2', '8.4']
     steps:
       - uses: actions/checkout@v4
@@ -23,5 +27,7 @@ jobs:
         run: php tests/run.php
       - name: Trash enabled
         run: php tests/run.php --trash-enabled
+      - name: Native process I/O and paths with spaces
+        run: php tests/process.php
       - name: Browser JavaScript syntax
         run: node --check public/assets/app.js

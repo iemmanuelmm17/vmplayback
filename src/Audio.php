@@ -2,6 +2,11 @@
 declare(strict_types=1);
 
 final class Audio {
+    /** Discard process I/O without using Unix-only paths on Windows. */
+    public static function processDescriptors(string $osFamily = PHP_OS_FAMILY): array {
+        $nullDevice = $osFamily === 'Windows' ? 'NUL' : '/dev/null';
+        return [0 => ['file', $nullDevice, 'r'], 1 => ['file', $nullDevice, 'w'], 2 => ['file', $nullDevice, 'w']];
+    }
     public static function validateRemote(string $url): void {
         $p = parse_url($url);
         if (!$p || ($p['scheme'] ?? '') !== 'https' || !in_array(strtolower($p['host'] ?? ''), config()['media_hosts'], true)
@@ -43,8 +48,12 @@ final class Audio {
                 $command = [config()['ffmpeg'], '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
                     '-protocol_whitelist', 'file,pipe', '-f', 'wav', '-i', $source,
                     '-t', '1800', '-vn', '-af', 'atempo=' . $rate, '-ar', '8000', '-ac', '1', '-c:a', 'pcm_s16le', $target];
-                $process = proc_open($command, [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
-                if (!is_resource($process)) throw new RuntimeException('FFmpeg is not available.');
+                if (!function_exists('proc_open')) throw new RuntimeException('Audio conversion requires proc_open to be enabled in PHP.');
+                // Array arguments plus bypass_shell handle Windows executable paths with
+                // spaces and avoid cmd.exe. Suppress startup warnings so API responses
+                // remain valid JSON; expose an actionable, credential-free error instead.
+                $process = @proc_open($command, self::processDescriptors(), $pipes, null, null, ['bypass_shell' => true]);
+                if (!is_resource($process)) throw new RuntimeException('Could not start FFmpeg. Set FFMPEG_BIN to the full executable path and grant the web-server account permission to run it.');
                 $deadline = microtime(true) + 30; $exit = -1;
                 do {
                     $state = proc_get_status($process);
@@ -53,7 +62,7 @@ final class Audio {
                     usleep(20000);
                 } while (true);
                 proc_close($process);
-                if ($exit !== 0 || !is_file($target) || filesize($target) < 44) throw new RuntimeException('Audio conversion failed. Check FFmpeg on the server.');
+                if ($exit !== 0 || !is_file($target) || filesize($target) < 44) throw new RuntimeException('Audio conversion failed. Check that FFMPEG_BIN points to a working FFmpeg executable and the web-server account can run it.');
                 chmod($target, 0600);
                 if (!rename($target, $base . '.wav')) throw new RuntimeException('Audio cache write failed.');
             } finally {

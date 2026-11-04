@@ -47,6 +47,26 @@ php -S 0.0.0.0:8080 -t public
 
 The built-in server is for development only. Use PHP-FPM with Nginx/Apache for production. A public HTTPS deployment is needed for a real phone test. `APP_ENV=development` permits an HTTP application URL, but upstream API/audio requests still require HTTPS. Never configure a real phone to fetch media from `localhost`.
 
+### Windows / IIS / Apache setup
+
+Set an absolute FFmpeg executable path in `.env`, for example:
+
+```dotenv
+FFMPEG_BIN=C:/ffmpeg/bin/ffmpeg.exe
+```
+
+Use the actual installation location. Do not include command-line arguments in this value. PHP uses Windows' `NUL` device for child-process I/O (and `/dev/null` on Unix), so no `/dev` directory needs to be created on Windows. `proc_open` must be enabled in the web server's PHP configuration. The web-server service account must have permission to execute FFmpeg and write to `var/`.
+
+Verify the executable in PowerShell:
+
+```powershell
+& 'C:\ffmpeg\bin\ffmpeg.exe' -version
+```
+
+A successful shell check does not prove the web-server service account has the same access. Prefer an absolute path rather than relying on your interactive user's `PATH`. Restart/recycle the PHP/web-server process after changing its environment or `php.ini`, then refresh the mailbox and select the message again.
+
+For production, set `display_errors=Off` and `log_errors=On` in the **web server's** `php.ini` so PHP warnings do not corrupt JSON/audio responses. Inspect the server's private PHP error log when troubleshooting.
+
 ### Example Nginx configuration
 
 Adapt paths, TLS configuration, and PHP-FPM socket to your server:
@@ -181,10 +201,11 @@ The cleanup script removes audio unused for four hours, expired call sessions, s
 find src public tests bin -name '*.php' -exec php -l {} \;
 php tests/run.php
 php tests/run.php --trash-enabled
+php tests/process.php
 node --check public/assets/app.js
 ```
 
-The offline tests cover request paths and JSON, response normalization, allowlisting/path validation, trash safeguards, signed audio/ranges, XML escaping, DTMF speed/navigation, forward confirmation/cancellation, folder switching, restoration, and timeout/hangup handling. The transport and audio renderer are replaced by test doubles; they do not contact or modify a live PBX.
+The offline tests cover request paths and JSON, response normalization, allowlisting/path validation, trash safeguards, signed audio/ranges, XML escaping, DTMF speed/navigation, forward confirmation/cancellation, folder switching, restoration, and timeout/hangup handling. The transport and audio renderer are replaced by test doubles; they do not contact or modify a live PBX. `tests/process.php` separately checks native child-process startup, null-device I/O, and arguments with spaces. CI runs both suites on Windows and Linux with PHP 8.2 and 8.4.
 
 **Before production:** test an actual call on your core, DTMF interruption, empty Gather timeout callbacks, WAV codec delivery, forwarding to a test extension, and verified trash/restore behavior. Check that media fetches and callbacks work without browser cookies. Network access to the supplied PBX and a usable token are not part of the offline tests.
 
