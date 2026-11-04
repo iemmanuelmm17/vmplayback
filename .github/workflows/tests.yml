@@ -1,0 +1,27 @@
+name: Offline tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  php:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: ['8.2', '8.4']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl, dom
+          coverage: none
+      - name: PHP syntax
+        run: find src public tests bin -name '*.php' -exec php -l {} \;
+      - name: Trash disabled
+        run: php tests/run.php
+      - name: Trash enabled
+        run: php tests/run.php --trash-enabled
+      - name: Browser JavaScript syntax
+        run: node --check public/assets/app.js
