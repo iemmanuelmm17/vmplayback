@@ -37,7 +37,8 @@ catch (Throwable) { $initialUser = ''; $initialDomain = ''; }
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VM Playback · Voicemail, at your pace</title>
 <link rel="stylesheet" href="assets/style.css">
-<script src="assets/app.js" defer></script>
+<script src="assets/audio.js?v=pcm-v2" defer></script>
+<script src="assets/app.js?v=pcm-v2" defer></script>
 </head>
 <body>
 <header class="topbar"><a class="brand" href="./"><span class="brand-icon" aria-hidden="true">◉</span> vm<span>playback</span></a><span class="top-note">YOUR VOICEMAIL. YOUR PACE.</span>
@@ -64,7 +65,7 @@ catch (Throwable) { $initialUser = ''; $initialDomain = ''; }
 </section>
 <section class="player-panel"><div class="panel-heading"><div class="eyebrow">NOW LISTENING</div><span class="small-tag" id="folder-tag">NO MAILBOX</span></div>
 <div class="player-intro"><div class="caller-avatar" id="caller-avatar">♪</div><h2 id="caller-name">Make time for the message.</h2><p id="caller-number">Select a voicemail to start listening.</p><p class="message-date" id="message-date">Every detail, at your pace.</p></div>
-<div class="audio-area"><audio id="audio" controls preload="metadata" aria-label="Voicemail audio"></audio><p id="audio-note">Audio stays private. Playback starts when you press play.</p></div>
+<div class="audio-area"><audio id="audio" controls controlslist="noplaybackrate" preload="metadata" aria-label="Voicemail audio"></audio><p id="audio-note">Audio stays private. Playback starts when you press play.</p></div>
 <div class="speed-controls"><span>PLAYBACK SPEED</span><div><button id="slower" class="speed-button" aria-label="Decrease playback speed">−</button><output id="speed-value">1.00×</output><button id="faster" class="speed-button" aria-label="Increase playback speed">+</button></div><button id="normal-speed" class="text-button">Reset to 1×</button></div>
 <div class="player-actions"><button id="save" disabled>↓ <span>Save</span><kbd>1</kbd></button><button id="trash" disabled>⌫ <span>Move to trash</span><kbd>2</kbd></button><button id="forward" disabled>↗ <span>Forward</span><kbd>4</kbd></button></div>
 <div class="navigation"><button id="replay" class="text-button" disabled>↶ Replay <kbd>8</kbd></button><button id="next" class="next-button" disabled>Next message → <kbd>5</kbd></button></div>

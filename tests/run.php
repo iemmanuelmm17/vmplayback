@@ -60,6 +60,36 @@ if (config()['trash_confirmed']) {
     rejects(fn() => $api->trash($mb, 'new', $record['filename']), 'soft delete must be confirmed by administrator');
     check(count($calls) === $count, 'disabled trash sends no request');
 }
+$browserCommand = Audio::command('source with spaces.wav', 'target.wav', 1.0, 'browser');
+$phoneCommand = Audio::command('source.wav', 'target.wav', 1.0, 'phone');
+$tempoCommand = Audio::command('source.wav', 'target.wav', .75, 'browser');
+check(!in_array('-af', $browserCommand, true) && !in_array('-af', $phoneCommand, true), '1x bypasses time stretching');
+check($browserCommand[array_search('-ar', $browserCommand, true) + 1] === '48000', 'browser audio is not reduced to telephone bandwidth');
+check($phoneCommand[array_search('-ar', $phoneCommand, true) + 1] === '8000' && in_array('-ac', $phoneCommand, true), 'phone keeps compatible 8k mono format');
+check(in_array('aresample=48000,atempo=0.75', $tempoCommand, true), 'tempo processing resamples before stretching');
+check(in_array('source with spaces.wav', $browserCommand, true), 'FFmpeg arguments preserve spaced filenames');
+check(Audio::cacheId($mb, $record['filename'], 1, 'browser') !== Audio::cacheId($mb, $record['filename'], 1, 'phone'), 'separate browser/phone caches');
+check(Audio::cacheId($mb, $record['filename'], 1, 'browser') !== Audio::cacheId($mb, $record['filename'], .75, 'browser'), 'separate tempo caches');
+check(Audio::cacheId($mb, $record['filename'], 1, 'phone') !== hash('sha256', json_encode([$mb, $record['filename'], 1.0])), 'old low-quality caches are invalidated');
+check(Audio::requestedRate('1.00') === 1.0 && Audio::requestedRate('0.75') === .75, 'valid API playback rates');
+foreach (['NAN', 'INF', '1e309', '0', '4', '1.1', ''] as $badRate) rejects(fn() => Audio::requestedRate($badRate), 'invalid playback rate rejected');
+rejects(fn() => Audio::command('a', 'b', 1, 'invalid'), 'unknown audio profile rejected');
+$tempWav = tempnam(sys_get_temp_dir(), 'vmplayback-wav-');
+try {
+    $fmt = 'fmt ' . pack('VvvVVvv', 16, 1, 1, 8000, 16000, 2, 16);
+    $data = str_repeat("\0", 1600);
+    $chunks = $fmt . 'JUNK' . pack('V', 1) . 'x' . "\0" . 'data' . pack('V', strlen($data)) . $data;
+    file_put_contents($tempWav, 'RIFF' . pack('V', strlen($chunks) + 4) . 'WAVE' . $chunks);
+    $info = Audio::wavInfo($tempWav);
+    check($info !== null && $info['sample_rate'] === 8000 && abs($info['duration'] - .1) < .0001, 'WAV parser skips padded metadata chunks');
+    file_put_contents($tempWav, 'RIFF' . pack('V', strlen($chunks) + 4) . 'WAVE' . substr($chunks, 0, -2));
+    check(Audio::wavInfo($tempWav) === null, 'truncated WAV rejected');
+    $empty = $fmt . 'data' . pack('V', 0);
+    file_put_contents($tempWav, 'RIFF' . pack('V', strlen($empty) + 4) . 'WAVE' . $empty);
+    check(Audio::wavInfo($tempWav) === null, 'header-only WAV rejected');
+    file_put_contents($tempWav, '<html>upstream error</html>');
+    check(Audio::wavInfo($tempWav) === null, 'non-audio cache rejected');
+} finally { unlink($tempWav); }
 Audio::validateRemote($record['file-access-url']);
 foreach (['http://nms1.nyc.birns.net/a', 'https://evil.example/a', 'https://nms1.nyc.birns.net.evil/a', 'https://user:pass@nms1.nyc.birns.net/a', 'https://nms1.nyc.birns.net:444/a', 'file:///etc/passwd'] as $bad) rejects(fn() => Audio::validateRemote($bad), 'media SSRF guard');
 $id = str_repeat('a', 64); parse_str(parse_url(Audio::signedUrl($id), PHP_URL_QUERY), $q);
